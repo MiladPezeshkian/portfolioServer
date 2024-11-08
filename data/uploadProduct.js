@@ -19,7 +19,7 @@ exports.Upload = function () {
         const newProduct = new Category(product);
         try {
           await newProduct.save();
-          console.log("Product saved successfully");
+          // console.log("Product saved successfully");
         } catch (error) {}
       });
     }

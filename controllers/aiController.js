@@ -98,7 +98,7 @@ exports.getAiByCategory = catchAsync(async (req, res, next) => {
   const categoryObj = await Category.findOne({
     $or: [{ id: id }],
   });
-  console.log(categoryObj);
+  // console.log(categoryObj);
 
   if (!categoryObj) {
     return next(new AppError("Category not found", 404));
