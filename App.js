@@ -20,7 +20,11 @@ const users = require("./routes/userRoutes");
 
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://aiwebpage-client.onrender.com"],
+    origin: [
+      "http://localhost:5173",
+      "https://aiwebpage-client.onrender.com",
+      "https://lonewalkerai.netlify.app",
+    ],
     methods: ["GET", "POST", "PATCH", "DELETE"],
     credentials: true,
   })
