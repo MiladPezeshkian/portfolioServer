@@ -11,7 +11,9 @@ exports.createAi = catchAsync(async (req, res, next) => {
 
   // بررسی اینکه آیا فایلی آپلود شده است
   if (!image && req.file) {
-    image = req.file.path.replace(/\\/g, "/"); // حل مشکل در مسیر فایل برای ویندوز
+    image = "https://aiwebpage-server.onrender.com/";
+    image += req.file.path.replace(/\\/g, "/");
+    // حل مشکل در مسیر فایل برای ویندوز
   }
 
   // بررسی وجود دسته‌بندی
