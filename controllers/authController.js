@@ -1,19 +1,18 @@
+// controllers/authController.js
 const jwt = require("jsonwebtoken");
-const crypto = require("crypto");
-const User = require("../models/UserModel");
-const catchAsync = require("../utils/catchAsync");
-const AppError = require("../utils/AppError");
-const sendEmail = require("../utils/email");
 const { promisify } = require("util");
+const User = require("../models/Professor.js"); // مدل استاد
+const catchAsync = require("../utils/catchAsync.js");
+const AppError = require("../utils/AppError.js");
 
-// Helper function for creating JWT token
+// Helper function: ایجاد توکن JWT
 const signToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN,
   });
 };
 
-// Helper function for sending the JWT token
+// Helper function: ارسال توکن به کاربر از طریق کوکی و پاسخ JSON
 const createSendToken = (user, statusCode, res) => {
   const token = signToken(user._id);
 
@@ -22,82 +21,69 @@ const createSendToken = (user, statusCode, res) => {
       Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000
     ),
     httpOnly: true,
-    secure: true,
-    //  process.env.NODE_ENV === "production", // فقط در حالت تولید امن است
-    sameSite: "None",
-    // process.env.NODE_ENV === "production" ? "None" : "Lax", // در حالت تولید نیاز به None است
+    secure: process.env.NODE_ENV === "production", // فقط در حالت تولید true خواهد بود
+    sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
   };
+
   res.cookie("jwt", token, cookieOptions);
 
+  // پاکسازی فیلد پسورد از خروجی
   user.password = undefined;
 
   res.status(statusCode).json({
     status: "success",
     token,
-    data: {
-      user,
-    },
+    data: { user },
   });
 };
 
-// Signup
-exports.signup = catchAsync(async (req, res, next) => {
-  try {
-    const newUser = await User.create({
-      name: req.body.name,
-      email: req.body.email,
-      password: req.body.password,
-      passwordConfirm: req.body.passwordConfirm,
-    });
-    createSendToken(newUser, 201, res);
-  } catch (error) {
-    // console.log(error);
-  }
-});
-
-// Login
+// --------------------
+// Login Controller
+// --------------------
 exports.login = catchAsync(async (req, res, next) => {
   const { email, password } = req.body;
 
-  // 1) Check if email and password exist
+  // 1) بررسی ارسال ایمیل و پسورد
   if (!email || !password) {
     return next(new AppError("Please provide email and password!", 400));
   }
 
-  // 2) Check if user exists && password is correct
+  // 2) پیدا کردن کاربر و بررسی صحت پسورد
   const user = await User.findOne({ email }).select("+password");
   if (!user || !(await user.correctPassword(password, user.password))) {
     return next(new AppError("Incorrect email or password", 401));
   }
-  if (!user.isActive) {
-    // console.log(user.isActive);
-    return next(new AppError("You Are Banned", 401)); // بلاک شده
-  }
 
-  // 3) If everything is ok, send token to client
+  // 3) ارسال توکن به کاربر
   createSendToken(user, 200, res);
 });
 
-// Protect routes
+// --------------------
+// Protect Middleware: بررسی ورود کاربر
+// --------------------
 exports.protect = catchAsync(async (req, res, next) => {
   let token;
+  // بررسی توکن در هدر authorization
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
     token = req.headers.authorization.split(" ")[1];
-  } else if (req.cookies.jwt) {
+  }
+  // در غیر این صورت، بررسی کوکی‌ها
+  else if (req.cookies && req.cookies.jwt) {
     token = req.cookies.jwt;
   }
-
   if (!token) {
     return next(
       new AppError("You are not logged in! Please log in to get access.", 401)
     );
   }
 
+  // تأیید صحت توکن
   const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
 
+  // پیدا کردن کاربر از روی decoded token
   const currentUser = await User.findById(decoded.id);
   if (!currentUser) {
     return next(
@@ -105,234 +91,179 @@ exports.protect = catchAsync(async (req, res, next) => {
     );
   }
 
+  // بررسی تغییر رمز عبور پس از صدور توکن
   if (currentUser.changedPasswordAfter(decoded.iat)) {
     return next(
       new AppError("User recently changed password! Please log in again.", 401)
     );
   }
 
+  // افزودن کاربر به شیء request
   req.user = currentUser;
   next();
 });
 
-// Restrict access to specific roles
-exports.restrictTo = (...roles) => {
-  return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
-      return next(
-        new AppError("You do not have permission to perform this action", 403)
-      );
-    }
-    next();
-  };
-};
-exports.isLogin = catchAsync(async (req, res, next) => {
-  const token = req.cookies.jwt; // توکن را از کوکی‌ها استخراج می‌کنیم
+// --------------------
+// Restrict To Middleware: محدود کردن دسترسی بر اساس نقش کاربری
+// --------------------
+// exports.restrictTo = (...roles) => {
+//   return (req, res, next) => {
+//     // بررسی نقش کاربر موجود در req.user
+//     if (!roles.includes(req.user.role)) {
+//       return next(
+//         new AppError("You do not have permission to perform this action", 403)
+//       );
+//     }
+//     next();
+//   };
+// };
 
-  if (token === "loggedout" || token === undefined) {
-    // اگر توکنی وجود نداشت
+// --------------------
+// isLogin: بررسی وضعیت احراز هویت کاربر (برای استفاده در فرانت‌اند)
+// --------------------
+exports.isLogin = catchAsync(async (req, res, next) => {
+  const token = req.cookies ? req.cookies.jwt : undefined;
+  if (!token || token === "loggedout") {
     return res.status(200).json({ isAuthenticated: false });
   }
-
-  // اطلاعات کاربر را به req.user اضافه می‌کنیم
-
   return res.json({ isAuthenticated: true });
-
-  // در این حالت، نیازی به فراخوانی next() نیست
 });
 
-// Forgot Password - Sending a 5-digit code to email
-exports.forgotPassword = catchAsync(async (req, res, next) => {
-  // 1) Get user based on POSTed email
-  const user = await User.findOne({ email: req.body.email });
-  if (!user) {
-    return next(new AppError("There is no user with that email address.", 404));
-  }
-  // 2) Generate random 5-digit code
-  const resetCode = Math.floor(10000 + Math.random() * 90000); // 5-digit code
-  // console.log(resetCode);
-  user.passwordResetToken = crypto
-    .createHash("sha256")
-    .update(resetCode.toString())
-    .digest("hex");
-  user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes expiration
+// --------------------
+// Reset Password (بدون ورود کاربر)
+// --------------------
+// exports.resetPassword = catchAsync(async (req, res, next) => {
+//   // پیدا کردن کاربر بر اساس ایمیل
+//   const user = await User.findOne({ email: req.body.email });
+//   if (!user) {
+//     return next(new AppError("Code is invalid or has expired", 400));
+//   }
+//   // به‌روزرسانی رمز عبور
+//   user.password = req.body.password;
+//   user.passwordConfirm = req.body.passwordConfirm;
+//   await user.save();
 
-  await user.save({ validateBeforeSave: false });
-  // 3) Send it to user's email
+//   // ورود مجدد کاربر و ارسال توکن
+//   createSendToken(user, 200, res);
+// });
 
-  try {
-    await sendEmail({
-      email: user.email,
-      subject: "Your password reset code (valid for 10  minutes)",
-      message: `Your password reset code is: ${resetCode}. If you did not request this, please ignore this email.`,
-    });
-
-    res.status(200).json({
-      status: "success",
-      message: "Reset code sent to email!",
-    });
-  } catch (err) {
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    await user.save({ validateBeforeSave: false });
-    return next(
-      new AppError(
-        "There was an error sending the email. Try again later!",
-        500
-      )
-    );
-  }
-});
-exports.checkCode = catchAsync(async (req, res, next) => {
-  // پیدا کردن کاربر با استفاده از ایمیل
-  const user = await User.findOne({ email: req.body.email });
-  // بررسی اینکه کاربر وجود دارد یا خیر
-  if (!user) {
-    return next(new AppError("There is no user with that email address.", 404));
-  }
-  const Code = crypto
-    .createHash("sha256")
-    .update(req.body.code.toString())
-    .digest("hex");
-
-  // بررسی اینکه آیا زمان اعتبار توکن گذشته است یا خیر
-  if (!user.passwordResetExpires || user.passwordResetExpires < Date.now()) {
-    return next(
-      new AppError(
-        "Your reset code has expired. Please request a new one.",
-        400
-      )
-    );
-  }
-  // بررسی اینکه آیا کد وریفیکیشن صحیح است یا خیر
-  if (user.passwordResetToken === Code) {
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    await user.save({ validateBeforeSave: false });
-    res.status(200).json({
-      status: "success",
-      message: "You can now reset your password",
-    });
-  } else {
-    // اگر کد اشتباه باشد
-    return next(new AppError("Code is invalid", 400));
-  }
-});
-
-// Verify the reset code and reset the password
-exports.resetPassword = catchAsync(async (req, res, next) => {
-  // 1) Hash the provided code and find the user
-
-  const user = await User.findOne({ email: req.body.email });
-
-  // 2) If code is invalid or expired, return an error
-  if (!user) {
-    return next(new AppError("Code is invalid or has expired", 400));
-  }
-  // 3) Update the user's password
-  user.password = req.body.password;
-  user.passwordConfirm = req.body.passwordConfirm;
-
-  await user.save();
-
-  // 4) Log the user in, send JWT
-  createSendToken(user, 200, res);
-});
-// Verify the reset code and reset the password
-exports.resetPasswordinLoggin = catchAsync(async (req, res, next) => {
-  // 1) Find the user based on the current logged-in user's email
-  const user = await User.findOne({ email: req.user.email }).populate(
-    "password"
+// --------------------
+// Reset Password in Logged In (تغییر رمز عبور در حین ورود)
+// --------------------
+exports.updateAccount = catchAsync(async (req, res, next) => {
+  // Find the user by the email attached to req.user (e.g., from authentication middleware)
+  const user = await User.findOne({ email: req.user.email }).select(
+    "+password"
   );
-
-  // 2) If user is not found, return an error
   if (!user) {
     return next(new AppError("User not found.", 404));
   }
 
-  // 3) Check if the current password is correct
-  const isCurrentPasswordCorrect = await user.correctPassword(
-    req.body.currentPassword,
-    user.password
-  );
-  // لاگ وضعیت رمز عبور فعلی
-  if (!isCurrentPasswordCorrect) {
-    return next(new AppError("Your current password is wrong.", 400));
+  // Update email if a new email is provided and it's different from the current one.
+  if (req.body.email && req.body.email !== user.email) {
+    user.email = req.body.email;
   }
 
-  // 4) Check if the new password is the same as the current password
-  const isSamePassword = await user.correctPassword(
-    req.body.newPassword,
-    user.password
-  );
-  if (isSamePassword) {
-    return next(
-      new AppError("New password cannot be the same as the old password.", 400)
+  // If a new password is provided, update the password.
+  if (req.body.newPassword) {
+    // Ensure the current password is provided
+    if (!req.body.currentPassword) {
+      return next(
+        new AppError(
+          "Current password is required to update the password.",
+          400
+        )
+      );
+    }
+
+    // Verify that the current password is correct
+    const isCurrentPasswordCorrect = await user.correctPassword(
+      req.body.currentPassword,
+      user.password
     );
+    if (!isCurrentPasswordCorrect) {
+      return next(new AppError("Your current password is wrong.", 400));
+    }
+
+    // Check that the new password is not the same as the current password
+    const isSamePassword = await user.correctPassword(
+      req.body.newPassword,
+      user.password
+    );
+    if (isSamePassword) {
+      return next(
+        new AppError(
+          "New password cannot be the same as the old password.",
+          400
+        )
+      );
+    }
+
+    // Update the password field
+    user.password = req.body.newPassword;
+    user.passwordConfirm = req.body.passwordConfirm;
   }
 
-  // 5) Update the user's password
-  user.password = req.body.newPassword; // اعتبارسنجی رمز عبور در مدل کاربر انجام می‌شود
-
+  // Save the user document to persist changes.
   await user.save();
 
-  // 6) Log the user out by setting a cookie
-  res.cookie("jwt", "loggedout", {
-    expires: new Date(Date.now() + 50 * 1000),
-    httpOnly: true,
-    secure: true,
-    //  process.env.NODE_ENV === "production", // فقط در حالت تولید امن است
-    sameSite: "None",
-  });
+  // If the password was updated, log out the user by resetting the JWT cookie.
+  if (req.body.newPassword) {
+    res.cookie("jwt", "loggedout", {
+      expires: new Date(Date.now() + 50 * 1000),
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+    });
+    return res.status(200).json({
+      status: "success",
+      message:
+        "Account updated successfully. Your password has been reset, and you have been logged out.",
+    });
+  }
 
-  // 7) Send success response
+  // If only the email was updated, respond with success.
   res.status(200).json({
     status: "success",
-    message: "Password reset successfully. You have been logged out.",
+    message: "Account updated successfully.",
   });
 });
 
-/**
- * Logout - Delete the JWT cookie from the user's browser
- * @param {Object} req - The request object
- * @param {Object} res - The response object
- */
+// --------------------
+// Logout Controller: حذف توکن از کوکی
+// --------------------
 exports.logout = (req, res, next) => {
-  // کوکی را با نام jwt حذف می‌کنیم و همه تنظیمات مشابه با کوکی اصلی را استفاده می‌کنیم
   const cookieOptions = {
     expires: new Date(
       Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000
     ),
     httpOnly: true,
-    secure: true,
-    //  process.env.NODE_ENV === "production", // فقط در حالت تولید امن است
-    sameSite: "None",
-    // process.env.NODE_ENV === "production" ? "None" : "Lax", // در حالت تولید نیاز به None است
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
   };
   res.cookie("jwt", "loggedout", cookieOptions);
-  res.status(200).json({
-    status: "success",
-  });
+  res.status(200).json({ status: "success" });
 };
 
-// Get current user
+// --------------------
+// Get Current User: دریافت اطلاعات کاربر جاری
+// --------------------
 exports.getMe = catchAsync(async (req, res, next) => {
-  // Check if the user exists in the request
-  const user = req.user; // User is already set in the request by the protect middleware
-
+  const user = req.user; // از protect middleware تنظیم شده است
   if (!user) {
     return next(new AppError("User not found.", 404));
   }
-
   res.status(200).json({
     status: "success",
-    data: {
-      user,
-    },
+    data: { user },
   });
 });
+
+// --------------------
+// Update Current User Data (به‌جز تغییر رمز عبور)
+// --------------------
 exports.updateMe = catchAsync(async (req, res, next) => {
-  // 1) مطمئن شو که کاربر نمی‌خواهد پسورد خود را آپدیت کند
+  // جلوگیری از تغییر رمز عبور در این روت
   if (req.body.password || req.body.passwordConfirm) {
     return next(
       new AppError(
@@ -342,34 +273,23 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     );
   }
 
-  // 2) فیلدهای قابل آپدیت را فیلتر می‌کنیم
+  // فیلتر کردن فیلدهای مجاز برای به‌روزرسانی
   const filteredBody = {};
   const allowedFields = ["name", "email", "PhoneNumber", "address"];
 
   allowedFields.forEach((field) => {
-    // اگر کاربر رشته خالی یا null ارسال کرد
-    if (req.body[field] === "" || req.body[field] === null) {
-      // بررسی اینکه آیا فیلد الزامی است
-      if (field === "name" || field === "email") {
-        return next(new AppError(`${field} is required.`, 400));
-      }
-      filteredBody[field] = "none"; // فیلد حذف شود
-    } else if (req.body[field]) {
-      filteredBody[field] = req.body[field]; // مقدار موجود را ذخیره می‌کنیم
+    if (req.body[field] !== undefined && req.body[field] !== "") {
+      filteredBody[field] = req.body[field];
     }
   });
 
-  // 3) به‌روزرسانی اطلاعات کاربر
   const updatedUser = await User.findByIdAndUpdate(req.user.id, filteredBody, {
-    new: true, // کاربر به‌روزرسانی شده را برگرداند
-    runValidators: true, // اعتبارسنجی فیلدها را انجام دهد
+    new: true,
+    runValidators: true,
   });
 
-  // 4) ارسال پاسخ به کاربر
   res.status(200).json({
     status: "success",
-    data: {
-      user: updatedUser,
-    },
+    data: { user: updatedUser },
   });
 });
