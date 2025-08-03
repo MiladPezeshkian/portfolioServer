@@ -30,7 +30,7 @@ app.set("trust proxy", 1);
 // Implement CORS
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://drparastofatthi.netlify.app"],
+    origin: ["http://localhost:5173", "https://lonewalkerProf.netlify.app"],
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS", "PUT"],
     credentials: true,
     allowedHeaders: [
